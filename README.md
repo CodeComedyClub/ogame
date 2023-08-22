@@ -154,7 +154,7 @@ DeleteMessage(msgID int64) error
 DoAuction(bid map[ogame.CelestialID]ogame.Resources) error
 Done()
 FlightTime(origin, destination ogame.Coordinate, speed ogame.Speed, ships ogame.ShipsInfos, mission ogame.MissionID) (secs, fuel int64)
-GalaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemInfos, error)
+GalaxyInfos(galaxy, system int64) (ogame.SystemInfos, error)
 GetActiveItems(ogame.CelestialID) ([]ogame.ActiveItem, error)
 GetAllResources() (map[ogame.CelestialID]ogame.Resources, error)
 GetAttacks(...Option) ([]ogame.AttackEvent, error)

@@ -256,10 +256,10 @@ func (b *Prioritize) GetAttacks(opts ...Option) ([]ogame.AttackEvent, error) {
 }
 
 // GalaxyInfos get information of all planets and moons of a solar system
-func (b *Prioritize) GalaxyInfos(galaxy, system int64, options ...Option) (ogame.SystemInfos, error) {
+func (b *Prioritize) GalaxyInfos(galaxy, system int64) (ogame.SystemInfos, error) {
 	b.begin("GalaxyInfos")
 	defer b.done()
-	return b.bot.galaxyInfos(galaxy, system, options...)
+	return b.bot.galaxyInfos(galaxy, system)
 }
 
 // GetResourceSettings gets the resources settings for specified planetID

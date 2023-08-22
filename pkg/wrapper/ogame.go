@@ -2855,8 +2855,7 @@ func (b *OGame) getAttacks(opts ...Option) (out []ogame.AttackEvent, err error) 
 	return
 }
 
-func (b *OGame) galaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemInfos, error) {
-	cfg := getOptions(opts...)
+func (b *OGame) galaxyInfos(galaxy, system int64) (ogame.SystemInfos, error) {
 	var res ogame.SystemInfos
 	if galaxy < 1 || galaxy > b.server.Settings.UniverseSize {
 		return res, fmt.Errorf("galaxy must be within [1, %d]", b.server.Settings.UniverseSize)
@@ -2864,20 +2863,13 @@ func (b *OGame) galaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemI
 	if system < 1 || system > b.serverData.Systems {
 		return res, errors.New("system must be within [1, " + utils.FI64(b.serverData.Systems) + "]")
 	}
-	payload := url.Values{
-		"galaxy": {utils.FI64(galaxy)},
-		"system": {utils.FI64(system)},
-	}
-	vals := url.Values{"page": {"ingame"}, "component": {"galaxyContent"}, "ajax": {"1"}}
-	pageHTML, err := b.postPageContent(vals, payload, opts...)
+	galaxyPage, err := b.getGalaxyPage(galaxy, system)
 	if err != nil {
 		return res, err
 	}
-	res, err = b.extractor.ExtractGalaxyInfos(pageHTML, b.Player.PlayerName, b.Player.PlayerID, b.Player.Rank)
+
+	res, err = extractGalaxyInfos(galaxyPage)
 	if err != nil {
-		if cfg.DebugGalaxy {
-			fmt.Println(string(pageHTML))
-		}
 		return res, err
 	}
 	if res.Galaxy() != galaxy || res.System() != system {
@@ -2886,7 +2878,7 @@ func (b *OGame) galaxyInfos(galaxy, system int64, opts ...Option) (ogame.SystemI
 	return res, err
 }
 
-func (b *OGame) getGalaxyPage(galaxy int64, system int64) (*GalaxyPageContent, error) {
+func (b *OGame) getGalaxyPage(galaxy int64, system int64) (*ogame.GalaxyPageContent, error) {
 	// Get galaxy page content for the desired system.
 	by, err := b.postPageContent(url.Values{
 		"page":      {"ingame"},
@@ -2901,8 +2893,8 @@ func (b *OGame) getGalaxyPage(galaxy int64, system int64) (*GalaxyPageContent, e
 	if err != nil {
 		return nil, err
 	}
-	// Parse the json result, only defining the type for the GalaxyContent (Position and AvailableMissions properties).
-	var res GalaxyPageContent
+	// Parse the json result
+	var res ogame.GalaxyPageContent
 	if err = json.Unmarshal(by, &res); err != nil {
 		return nil, err
 	}
@@ -4268,19 +4260,6 @@ func (b *OGame) getAvailableDiscoveries() int64 {
 	return b.extractor.ExtractAvailableDiscoveries(pageHTML)
 }
 
-type GalaxyPageContent struct {
-	System struct {
-		GalaxyContent []struct {
-			Position          int64 `json:"position"`
-			AvailableMissions []struct {
-				CanSend     any   `json:"canSend,omitempty"`
-				MissionType int64 `json:"missionType,omitempty"`
-			} `json:"availableMissions"`
-		} `json:"galaxyContent"`
-	} `json:"system"`
-	Token string `json:"token"`
-}
-
 func (b *OGame) getPositionsAvailableForDiscoveryFleet(galaxy int64, system int64) ([]int64, error) {
 	galaxyPage, err := b.getGalaxyPage(galaxy, system)
 	if err != nil {
@@ -4298,6 +4277,96 @@ func (b *OGame) getPositionsAvailableForDiscoveryFleet(galaxy int64, system int6
 	}
 
 	return availablePositions, nil
+}
+
+func extractGalaxyInfos(galaxyPage *ogame.GalaxyPageContent) (ogame.SystemInfos, error) {
+
+	var res ogame.SystemInfos
+
+	res.OverlayToken = galaxyPage.Token
+
+	res.SetGalaxy(galaxyPage.System.Galaxy)
+	res.SetSystem(galaxyPage.System.System)
+	// Process planet and debris information
+	for i, positionContent := range galaxyPage.System.GalaxyContent {
+		if positionContent.Position <= 15 && len(positionContent.Planets.Planets) > 0 && positionContent.PositionFilters != "empty_filter" {
+			// Process planet information
+			planetInfos := new(ogame.PlanetInfos)
+
+			// We find the planet by planetType = 1 in Planets array
+			var planet ogame.PlanetInfo
+			var moon ogame.PlanetInfo
+			var debris ogame.PlanetInfo
+			for _, p := range positionContent.Planets.Planets {
+				if p.PlanetType == 1 {
+					planet = p
+				}
+				if p.PlanetType == 2 {
+					debris = p
+				}
+				if p.PlanetType == 3 {
+					moon = p
+				}
+			}
+
+			planetInfos.ID = planet.PlanetID
+			if moon.PlanetID != 0 {
+				planetInfos.Moon = new(ogame.MoonInfos)
+				planetInfos.Moon.ID = moon.PlanetID
+				planetInfos.Moon.Diameter = utils.ParseInt(moon.Size)
+				planetInfos.Moon.Activity = moon.Activity.IdleTime
+			}
+
+			if positionContent.Player.AllianceID != 0 {
+				planetInfos.Alliance = new(ogame.AllianceInfos)
+				planetInfos.Alliance.Name = positionContent.Player.AllianceName
+				planetInfos.Alliance.ID = positionContent.Player.AllianceID
+				planetInfos.Alliance.Rank = utils.ParseInt(positionContent.Player.Actions.Alliance.HighscoreTitle)
+				planetInfos.Alliance.Member = positionContent.Player.Actions.Alliance.MemberCount
+			}
+
+			if debris.PlanetID != 0 {
+				planetInfos.Debris.Metal = utils.ParseInt(debris.Resources.Metal.Amount)
+				planetInfos.Debris.Crystal = utils.ParseInt(debris.Resources.Crystal.Amount)
+				planetInfos.Debris.RecyclersNeeded = debris.RequiredShips
+			}
+
+			planetInfos.Activity = planet.Activity.IdleTime
+			planetInfos.Name = planet.PlanetName
+			planetInfos.Img = planet.ImageInformation
+			planetInfos.Inactive = positionContent.Player.IsInactive
+			planetInfos.StrongPlayer = positionContent.Player.IsStrong
+			planetInfos.Newbie = positionContent.Player.IsNewbie
+			planetInfos.Vacation = positionContent.Player.IsOnVacation
+			planetInfos.HonorableTarget = positionContent.Player.IsHonorableTarget
+			planetInfos.Administrator = positionContent.Player.IsAdmin
+			planetInfos.Banned = positionContent.Player.IsBanned
+			planetInfos.Player.IsBandit = positionContent.Player.Rank.RankClass == "rank_bandit1" || positionContent.Player.Rank.RankClass == "rank_bandit2" || positionContent.Player.Rank.RankClass == "rank_bandit3"
+			planetInfos.Player.IsStarlord = positionContent.Player.Rank.RankClass == "rank_starlord1" || positionContent.Player.Rank.RankClass == "rank_starlord2" || positionContent.Player.Rank.RankClass == "rank_starlord3"
+
+			var coord ogame.Coordinate
+			coord.Galaxy = positionContent.Galaxy
+			coord.System = positionContent.System
+			coord.Position = positionContent.Position
+			planetInfos.Coordinate = coord
+			planetInfos.Coordinate.Type = ogame.PlanetType
+			planetInfos.Date = time.Now()
+
+			planetInfos.Player.ID = positionContent.Player.PlayerID
+			planetInfos.Player.Name = positionContent.Player.PlayerName
+			planetInfos.Player.Rank = positionContent.Player.HighscorePositionPlayer
+
+			res.SetPlanet(i, planetInfos)
+
+		}
+		if positionContent.Position == 16 && positionContent.Planets.Expedition.PlanetID != 0 {
+			res.ExpeditionDebris.Metal = positionContent.Planets.Expedition.Resources.Metal.Amount
+			res.ExpeditionDebris.Crystal = positionContent.Planets.Expedition.Resources.Crystal.Amount
+			res.ExpeditionDebris.PathfindersNeeded = positionContent.Planets.Expedition.RequiredShips
+		}
+	}
+
+	return res, nil
 }
 
 // Public interface -----------------------------------------------------------
@@ -4677,8 +4746,8 @@ func (b *OGame) GetAttacks(opts ...Option) ([]ogame.AttackEvent, error) {
 }
 
 // GalaxyInfos get information of all planets and moons of a solar system
-func (b *OGame) GalaxyInfos(galaxy, system int64, options ...Option) (ogame.SystemInfos, error) {
-	return b.WithPriority(taskRunner.Normal).GalaxyInfos(galaxy, system, options...)
+func (b *OGame) GalaxyInfos(galaxy, system int64) (ogame.SystemInfos, error) {
+	return b.WithPriority(taskRunner.Normal).GalaxyInfos(galaxy, system)
 }
 
 // GetResourceSettings gets the resources settings for specified planetID
